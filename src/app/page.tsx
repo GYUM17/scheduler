@@ -21,6 +21,7 @@ type DrawingState = {
 };
 
 type PaintMode = "smart" | "mark" | "erase";
+type MobileSection = "users" | "table" | "result";
 
 type TouchGestureState = {
   active: boolean;
@@ -52,6 +53,7 @@ const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const WEEK_START_DAY = 0;
 const TOUCH_GESTURE_START_PX = 10;
 const TOUCH_GESTURE_AXIS_RATIO = 1.2;
+const MOBILE_MAX_WIDTH_QUERY = "(max-width: 767px)";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 const HAS_SUPABASE_ENV = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
@@ -210,9 +212,115 @@ function formatUpdatedAt(value: string | null): string {
   }).format(parsed);
 }
 
+function MobileSegmentTabs({
+  value,
+  onChange,
+}: {
+  value: MobileSection;
+  onChange: (next: MobileSection) => void;
+}) {
+  const options: Array<{ key: MobileSection; label: string }> = [
+    { key: "users", label: "사용자" },
+    { key: "table", label: "테이블" },
+    { key: "result", label: "결과" },
+  ];
+
+  return (
+    <div className="grid grid-cols-3 gap-2 rounded-2xl border border-slate-200 bg-white/90 p-2 md:hidden">
+      {options.map((option) => (
+        <button
+          key={option.key}
+          type="button"
+          onClick={() => onChange(option.key)}
+          className={`h-12 rounded-xl text-sm font-semibold transition ${
+            value === option.key
+              ? "bg-slate-900 text-white"
+              : "border border-slate-300 bg-white text-slate-700 hover:border-slate-500"
+          }`}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function MobileEditToggle({
+  enabled,
+  onToggle,
+  disabled,
+}: {
+  enabled: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={disabled}
+      className={`h-11 rounded-xl px-4 text-sm font-semibold transition ${
+        enabled
+          ? "bg-emerald-600 text-white hover:bg-emerald-500"
+          : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+      } disabled:cursor-not-allowed disabled:opacity-50`}
+    >
+      편집 모드 {enabled ? "ON" : "OFF"}
+    </button>
+  );
+}
+
+function MobileUsersPanel({
+  active,
+  className,
+  children,
+}: {
+  active: boolean;
+  className: string;
+  children: import("react").ReactNode;
+}) {
+  return <section className={`${active ? "block" : "hidden"} md:block ${className}`}>{children}</section>;
+}
+
+function MobileTablePanel({
+  active,
+  className,
+  children,
+  touchAction,
+}: {
+  active: boolean;
+  className: string;
+  children: import("react").ReactNode;
+  touchAction?: "auto" | "none" | "pan-x";
+}) {
+  return (
+    <div
+      className={`${active ? "block" : "hidden"} md:block ${className}`}
+      style={touchAction ? { touchAction } : undefined}
+    >
+      {children}
+    </div>
+  );
+}
+
+function MobileResultsPanel({
+  active,
+  className,
+  children,
+}: {
+  active: boolean;
+  className: string;
+  children: import("react").ReactNode;
+}) {
+  return <aside className={`${active ? "flex" : "hidden"} md:flex ${className}`}>{children}</aside>;
+}
+
 export default function Home() {
   const client = useMemo(() => getSupabaseClient(), []);
   const [userId, setUserId] = useState("");
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
+  const [mobileSection, setMobileSection] = useState<MobileSection>("table");
+  const [mobileEditEnabled, setMobileEditEnabled] = useState(false);
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [selectedMemberId, setSelectedMemberId] = useState("");
   const [minimumDuration, setMinimumDuration] = useState(60);
@@ -263,6 +371,46 @@ export default function Home() {
   useEffect(() => {
     touchGestureRef.current = touchGesture;
   }, [touchGesture]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const media = window.matchMedia(MOBILE_MAX_WIDTH_QUERY);
+    const sync = () => {
+      const isMobile = media.matches;
+      setIsMobileViewport(isMobile);
+      if (isMobile) {
+        setMobileEditEnabled(false);
+      }
+    };
+    sync();
+
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const savedSection = window.sessionStorage.getItem("meet-mobile-section");
+    if (savedSection === "users" || savedSection === "table" || savedSection === "result") {
+      queueMicrotask(() => {
+        setMobileSection(savedSection);
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.sessionStorage.setItem("meet-mobile-section", mobileSection);
+  }, [mobileSection]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -534,6 +682,7 @@ export default function Home() {
   );
 
   const canEditSelected = Boolean(selectedMember && selectedMember.user_id === userId);
+  const isCellInputEnabled = canEditSelected && (!isMobileViewport || mobileEditEnabled);
 
   useEffect(() => {
     if (drawing.active || !myMember) {
@@ -579,7 +728,7 @@ export default function Home() {
 
   const paintCell = useCallback(
     (day: number, slot: number, value: boolean) => {
-      if (!canEditSelected) {
+      if (!isCellInputEnabled) {
         return;
       }
 
@@ -600,11 +749,11 @@ export default function Home() {
         return nextCells;
       });
     },
-    [canEditSelected],
+    [isCellInputEnabled],
   );
 
   useEffect(() => {
-    if (!drawing.active || !canEditSelected) {
+    if (!drawing.active || !isCellInputEnabled) {
       return;
     }
 
@@ -615,7 +764,7 @@ export default function Home() {
     return () => {
       window.clearTimeout(timerId);
     };
-  }, [canEditSelected, draftCells, drawing.active, persistMyCells]);
+  }, [draftCells, drawing.active, isCellInputEnabled, persistMyCells]);
 
   const stopDrawing = useCallback(
     (event?: PointerEvent) => {
@@ -663,6 +812,25 @@ export default function Home() {
     },
     [canEditSelected, paintCell, persistMyCells],
   );
+
+  useEffect(() => {
+    if (!isMobileViewport) {
+      return;
+    }
+
+    if (mobileSection !== "table" || !mobileEditEnabled) {
+      if (drawing.active || touchGesture.active) {
+        stopDrawing();
+      }
+    }
+  }, [
+    drawing.active,
+    isMobileViewport,
+    mobileEditEnabled,
+    mobileSection,
+    stopDrawing,
+    touchGesture.active,
+  ]);
 
   useEffect(() => {
     window.addEventListener("pointerup", stopDrawing);
@@ -1000,6 +1168,21 @@ export default function Home() {
     await fetchMembers();
   }, [client, displayNameInput, fetchMembers, myMember, userId]);
 
+  const handleMobileSectionChange = useCallback((next: MobileSection) => {
+    setMobileSection(next);
+    if (next !== "table") {
+      setMobileEditEnabled(false);
+    }
+  }, []);
+
+  const toggleMobileEdit = useCallback(() => {
+    if (!canEditSelected) {
+      return;
+    }
+
+    setMobileEditEnabled((previous) => !previous);
+  }, [canEditSelected]);
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_15%_20%,#dbeafe_0%,transparent_45%),radial-gradient(circle_at_85%_15%,#fde68a_0%,transparent_40%),linear-gradient(155deg,#eff6ff_0%,#f8fafc_45%,#ecfeff_100%)] px-4 py-8 text-slate-900 md:px-8">
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 rounded-[30px] border border-slate-200/70 bg-white/75 p-4 shadow-[0_35px_90px_-35px_rgba(15,23,42,0.35)] backdrop-blur md:p-8">
@@ -1017,7 +1200,12 @@ export default function Home() {
           <p className="mt-2 text-xs text-slate-500">연결 상태: {statusMessage}</p>
         </header>
 
-        <section className="animate-fade-up rounded-2xl border border-slate-200/90 bg-white/90 p-4 [animation-delay:120ms] md:p-5">
+        <MobileSegmentTabs value={mobileSection} onChange={handleMobileSectionChange} />
+
+        <MobileUsersPanel
+          active={mobileSection === "users"}
+          className="animate-fade-up rounded-2xl border border-slate-200/90 bg-white/90 p-4 [animation-delay:120ms] md:p-5"
+        >
           <div className="flex flex-wrap items-center gap-2">
             <input
               value={displayNameInput}
@@ -1052,7 +1240,7 @@ export default function Home() {
               내 시간표 비우기
             </button>
 
-            <div className="inline-flex h-10 items-center rounded-xl border border-slate-300 bg-white p-1 text-xs sm:text-sm">
+            <div className="hidden h-10 items-center rounded-xl border border-slate-300 bg-white p-1 text-xs sm:text-sm md:inline-flex">
               <button
                 type="button"
                 onClick={() => setPaintMode("smart")}
@@ -1167,12 +1355,71 @@ export default function Home() {
             {canEditSelected ? " (편집 가능)" : " (읽기 전용)"}
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            터치 입력: 모드를 선택한 뒤 드래그하세요. `토글`은 셀 상태를 반전, `체크`는 가능으로, `지우기`는 비움 처리합니다.
+            터치 입력: 모바일은 테이블 탭의 편집 모드 ON에서만 입력됩니다. `토글`은 셀 상태 반전, `체크`는 가능으로, `지우기`는 비움 처리합니다.
           </p>
-        </section>
+        </MobileUsersPanel>
 
         <section className="grid animate-fade-up gap-4 [animation-delay:220ms] lg:grid-cols-[1fr_340px]">
-          <div className="overflow-auto rounded-2xl border border-slate-200 bg-white/90 p-3 md:p-4">
+          <MobileTablePanel
+            active={mobileSection === "table"}
+            className="rounded-2xl border border-slate-200 bg-white/90 p-3 md:p-4"
+            touchAction={isMobileViewport && !mobileEditEnabled ? "pan-x" : "auto"}
+          >
+            <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3 md:hidden">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-slate-800">테이블 편집</p>
+                <MobileEditToggle
+                  enabled={mobileEditEnabled}
+                  onToggle={toggleMobileEdit}
+                  disabled={!canEditSelected}
+                />
+              </div>
+              <p className="mt-2 text-xs text-slate-600">
+                {mobileEditEnabled
+                  ? "편집 ON: 탭/세로 드래그로 가능한 시간을 체크하세요."
+                  : "편집 OFF: 스와이프로 시간표를 이동해 확인만 할 수 있습니다."}
+              </p>
+              <div className="mt-3 inline-flex h-10 items-center rounded-xl border border-slate-300 bg-white p-1 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setPaintMode("smart")}
+                  disabled={!mobileEditEnabled}
+                  className={`rounded-lg px-2.5 py-1.5 transition ${
+                    paintMode === "smart"
+                      ? "bg-slate-900 text-white"
+                      : "text-slate-600 hover:bg-slate-100"
+                  } disabled:cursor-not-allowed disabled:opacity-40`}
+                >
+                  토글
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaintMode("mark")}
+                  disabled={!mobileEditEnabled}
+                  className={`rounded-lg px-2.5 py-1.5 transition ${
+                    paintMode === "mark"
+                      ? "bg-emerald-600 text-white"
+                      : "text-slate-600 hover:bg-slate-100"
+                  } disabled:cursor-not-allowed disabled:opacity-40`}
+                >
+                  체크
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaintMode("erase")}
+                  disabled={!mobileEditEnabled}
+                  className={`rounded-lg px-2.5 py-1.5 transition ${
+                    paintMode === "erase"
+                      ? "bg-rose-600 text-white"
+                      : "text-slate-600 hover:bg-slate-100"
+                  } disabled:cursor-not-allowed disabled:opacity-40`}
+                >
+                  지우기
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto overscroll-x-contain">
             <table className="min-w-[760px] border-separate border-spacing-0 overflow-hidden rounded-xl">
               <thead>
                 <tr>
@@ -1213,7 +1460,7 @@ export default function Home() {
                             data-day={dayIndex}
                             data-slot={slot}
                             onPointerDown={(event) => {
-                              if (!canEditSelected) {
+                              if (!isCellInputEnabled) {
                                 return;
                               }
 
@@ -1249,7 +1496,7 @@ export default function Home() {
                               marked,
                               common,
                               ratio,
-                            )} ${!canEditSelected ? "cursor-not-allowed" : "cursor-cell"}`}
+                            )} ${!isCellInputEnabled ? "cursor-not-allowed" : "cursor-cell"}`}
                             title={`${dayLabel} ${slotToTime(slot)} (${count}/${membersForCalculation.length}명 가능)`}
                             aria-label={`${dayLabel} ${slotToTime(slot)} 셀`}
                           />
@@ -1260,9 +1507,13 @@ export default function Home() {
                 ))}
               </tbody>
             </table>
-          </div>
+            </div>
+          </MobileTablePanel>
 
-          <aside className="flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white/90 p-4">
+          <MobileResultsPanel
+            active={mobileSection === "result"}
+            className="flex-col gap-4 rounded-2xl border border-slate-200 bg-white/90 p-4"
+          >
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
               <p className="text-xs uppercase tracking-[0.18em] text-emerald-700">공통 가능 시간</p>
               <p className="mt-1 text-2xl font-semibold text-emerald-900">
@@ -1324,7 +1575,7 @@ export default function Home() {
               <p>색상 가이드</p>
               <p>초록: 전원 가능 / 파랑: 현재 선택 멤버 가능 체크</p>
             </div>
-          </aside>
+          </MobileResultsPanel>
         </section>
       </main>
 
