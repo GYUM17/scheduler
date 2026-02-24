@@ -22,6 +22,17 @@ type DrawingState = {
 
 type PaintMode = "smart" | "mark" | "erase";
 
+type TouchGestureState = {
+  active: boolean;
+  pointerId: number | null;
+  startX: number;
+  startY: number;
+  startDay: number;
+  startSlot: number;
+  value: boolean;
+  mode: "pending" | "paint" | "scroll";
+};
+
 type TimeBlock = {
   day: number;
   startSlot: number;
@@ -39,6 +50,8 @@ const SLOT_COUNT = ((END_HOUR - START_HOUR) * 60) / SLOT_MINUTES;
 const DURATION_OPTIONS = [30, 60, 90, 120];
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const WEEK_START_DAY = 0;
+const TOUCH_GESTURE_START_PX = 10;
+const TOUCH_GESTURE_AXIS_RATIO = 1.2;
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 const HAS_SUPABASE_ENV = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
@@ -213,6 +226,16 @@ export default function Home() {
   const [draftCells, setDraftCells] = useState<Record<string, true>>({});
   const [drawing, setDrawing] = useState<DrawingState>({ active: false, value: true });
   const [paintMode, setPaintMode] = useState<PaintMode>("smart");
+  const [touchGesture, setTouchGesture] = useState<TouchGestureState>({
+    active: false,
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    startDay: 0,
+    startSlot: 0,
+    value: true,
+    mode: "pending",
+  });
   const [isRealtimeSubscribed, setIsRealtimeSubscribed] = useState(false);
   const [needsNameSetup, setNeedsNameSetup] = useState(false);
   const [isViewOnlyMode, setIsViewOnlyMode] = useState(false);
@@ -222,10 +245,24 @@ export default function Home() {
       : "Supabase 환경변수(NEXT_PUBLIC_SUPABASE_URL/ANON_KEY)를 설정해주세요.",
   );
   const draftCellsRef = useRef<Record<string, true>>({});
+  const touchGestureRef = useRef<TouchGestureState>({
+    active: false,
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    startDay: 0,
+    startSlot: 0,
+    value: true,
+    mode: "pending",
+  });
 
   useEffect(() => {
     draftCellsRef.current = draftCells;
   }, [draftCells]);
+
+  useEffect(() => {
+    touchGestureRef.current = touchGesture;
+  }, [touchGesture]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -580,15 +617,52 @@ export default function Home() {
     };
   }, [canEditSelected, draftCells, drawing.active, persistMyCells]);
 
-  const stopDrawing = useCallback(() => {
-    setDrawing((previous) =>
-      previous.active ? { active: false, value: previous.value } : previous,
-    );
+  const stopDrawing = useCallback(
+    (event?: PointerEvent) => {
+      let handledPendingTap = false;
+      const gesture = touchGestureRef.current;
+      if (gesture.active) {
+        if (event && gesture.pointerId !== null && event.pointerId !== gesture.pointerId) {
+          return;
+        }
 
-    if (canEditSelected) {
-      void persistMyCells(draftCellsRef.current);
-    }
-  }, [canEditSelected, persistMyCells]);
+        if (gesture.mode === "pending") {
+          handledPendingTap = true;
+          paintCell(gesture.startDay, gesture.startSlot, gesture.value);
+        }
+
+        setTouchGesture((previous) =>
+          previous.active
+            ? {
+                active: false,
+                pointerId: null,
+                startX: 0,
+                startY: 0,
+                startDay: 0,
+                startSlot: 0,
+                value: true,
+                mode: "pending",
+              }
+            : previous,
+        );
+      }
+
+      setDrawing((previous) =>
+        previous.active ? { active: false, value: previous.value } : previous,
+      );
+
+      if (canEditSelected) {
+        if (handledPendingTap) {
+          window.setTimeout(() => {
+            void persistMyCells(draftCellsRef.current);
+          }, 80);
+          return;
+        }
+        void persistMyCells(draftCellsRef.current);
+      }
+    },
+    [canEditSelected, paintCell, persistMyCells],
+  );
 
   useEffect(() => {
     window.addEventListener("pointerup", stopDrawing);
@@ -617,31 +691,86 @@ export default function Home() {
   }, [drawing.active]);
 
   useEffect(() => {
-    if (!drawing.active) {
+    if (!drawing.active && !touchGesture.active) {
       return;
     }
 
-    const handlePointerMove = (event: PointerEvent) => {
-      const target = document.elementFromPoint(event.clientX, event.clientY);
+    const findCellByPoint = (x: number, y: number) => {
+      const target = document.elementFromPoint(x, y);
       const cellButton = target?.closest<HTMLButtonElement>("[data-cell='1']");
-
       if (!cellButton) {
-        return;
+        return null;
       }
 
       const day = Number(cellButton.dataset.day);
       const slot = Number(cellButton.dataset.slot);
-
       if (Number.isNaN(day) || Number.isNaN(slot)) {
+        return null;
+      }
+
+      return { day, slot };
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const gesture = touchGestureRef.current;
+      if (gesture.active) {
+        if (gesture.pointerId !== null && event.pointerId !== gesture.pointerId) {
+          return;
+        }
+
+        if (gesture.mode === "pending") {
+          const dx = event.clientX - gesture.startX;
+          const dy = event.clientY - gesture.startY;
+          const absX = Math.abs(dx);
+          const absY = Math.abs(dy);
+
+          if (absX < TOUCH_GESTURE_START_PX && absY < TOUCH_GESTURE_START_PX) {
+            return;
+          }
+
+          if (absX > absY * TOUCH_GESTURE_AXIS_RATIO) {
+            setTouchGesture((previous) =>
+              previous.active ? { ...previous, mode: "scroll" } : previous,
+            );
+            return;
+          }
+
+          setTouchGesture((previous) =>
+            previous.active ? { ...previous, mode: "paint" } : previous,
+          );
+          setDrawing({ active: true, value: gesture.value });
+          paintCell(gesture.startDay, gesture.startSlot, gesture.value);
+        }
+
+        const latest = touchGestureRef.current;
+        if (latest.mode === "scroll") {
+          return;
+        }
+
+        const found = findCellByPoint(event.clientX, event.clientY);
+        if (!found) {
+          return;
+        }
+
+        paintCell(found.day, found.slot, latest.value);
         return;
       }
 
-      paintCell(day, slot, drawing.value);
+      if (!drawing.active) {
+        return;
+      }
+
+      const found = findCellByPoint(event.clientX, event.clientY);
+      if (!found) {
+        return;
+      }
+
+      paintCell(found.day, found.slot, drawing.value);
     };
 
     window.addEventListener("pointermove", handlePointerMove);
     return () => window.removeEventListener("pointermove", handlePointerMove);
-  }, [drawing.active, drawing.value, paintCell]);
+  }, [drawing.active, drawing.value, paintCell, touchGesture.active]);
 
   const displayedCells = useMemo(() => {
     if (!selectedMember) {
@@ -1083,7 +1212,7 @@ export default function Home() {
                             data-cell="1"
                             data-day={dayIndex}
                             data-slot={slot}
-                            onPointerDown={() => {
+                            onPointerDown={(event) => {
                               if (!canEditSelected) {
                                 return;
                               }
@@ -1093,6 +1222,20 @@ export default function Home() {
                                 paintMode === "smart"
                                   ? !currentValue
                                   : paintMode === "mark";
+                              if (event.pointerType === "touch") {
+                                setTouchGesture({
+                                  active: true,
+                                  pointerId: event.pointerId,
+                                  startX: event.clientX,
+                                  startY: event.clientY,
+                                  startDay: dayIndex,
+                                  startSlot: slot,
+                                  value: nextValue,
+                                  mode: "pending",
+                                });
+                                return;
+                              }
+
                               setDrawing({ active: true, value: nextValue });
                               paintCell(dayIndex, slot, nextValue);
                             }}
@@ -1102,7 +1245,7 @@ export default function Home() {
                               }
                               paintCell(dayIndex, slot, drawing.value);
                             }}
-                            className={`h-11 w-full touch-none border border-slate-300 transition-colors active:scale-[0.98] md:h-8 ${classForCell(
+                            className={`h-11 w-full touch-auto border border-slate-300 transition-colors active:scale-[0.98] md:h-8 ${classForCell(
                               marked,
                               common,
                               ratio,
