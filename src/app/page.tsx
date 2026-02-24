@@ -20,6 +20,8 @@ type DrawingState = {
   value: boolean;
 };
 
+type PaintMode = "smart" | "mark" | "erase";
+
 type TimeBlock = {
   day: number;
   startSlot: number;
@@ -210,8 +212,10 @@ export default function Home() {
   });
   const [draftCells, setDraftCells] = useState<Record<string, true>>({});
   const [drawing, setDrawing] = useState<DrawingState>({ active: false, value: true });
+  const [paintMode, setPaintMode] = useState<PaintMode>("smart");
   const [isRealtimeSubscribed, setIsRealtimeSubscribed] = useState(false);
   const [needsNameSetup, setNeedsNameSetup] = useState(false);
+  const [isViewOnlyMode, setIsViewOnlyMode] = useState(false);
   const [statusMessage, setStatusMessage] = useState(
     HAS_SUPABASE_ENV
       ? "인증 상태 확인 중..."
@@ -402,6 +406,7 @@ export default function Home() {
 
       if (data) {
         const existingMember = toMember(data);
+        setIsViewOnlyMode(false);
         setNeedsNameSetup(false);
         if (!displayNameInput.trim()) {
           setDisplayNameInput(existingMember.display_name);
@@ -431,6 +436,12 @@ export default function Home() {
       }
 
       const defaultName = window.localStorage.getItem("meet-display-name")?.trim() ?? "";
+      if (isViewOnlyMode) {
+        setNeedsNameSetup(false);
+        setStatusMessage("보기 전용 모드");
+        return;
+      }
+
       if (!defaultName) {
         setNeedsNameSetup(true);
         setStatusMessage("첫 접속입니다. 이름을 입력해주세요.");
@@ -457,6 +468,7 @@ export default function Home() {
       }
 
       setDisplayNameInput(defaultName);
+      setIsViewOnlyMode(false);
       setNeedsNameSetup(false);
       setStatusMessage("연결됨");
       void fetchMembers();
@@ -467,7 +479,7 @@ export default function Home() {
     return () => {
       ignore = true;
     };
-  }, [client, currentWeekStartMs, displayNameInput, fetchMembers, userId]);
+  }, [client, currentWeekStartMs, displayNameInput, fetchMembers, isViewOnlyMode, userId]);
 
   const myMember = useMemo(
     () => members.find((member) => member.user_id === userId),
@@ -586,6 +598,23 @@ export default function Home() {
       window.removeEventListener("pointercancel", stopDrawing);
     };
   }, [stopDrawing]);
+
+  useEffect(() => {
+    if (!drawing.active) {
+      return;
+    }
+
+    const prevTouchAction = document.body.style.touchAction;
+    const prevUserSelect = document.body.style.userSelect;
+
+    document.body.style.touchAction = "none";
+    document.body.style.userSelect = "none";
+
+    return () => {
+      document.body.style.touchAction = prevTouchAction;
+      document.body.style.userSelect = prevUserSelect;
+    };
+  }, [drawing.active]);
 
   useEffect(() => {
     if (!drawing.active) {
@@ -749,6 +778,7 @@ export default function Home() {
     }
 
     window.localStorage.setItem("meet-display-name", trimmed);
+    setIsViewOnlyMode(false);
     setNeedsNameSetup(false);
     setStatusMessage("연결됨");
     await fetchMembers();
@@ -764,41 +794,44 @@ export default function Home() {
     await persistMyCells(empty);
   }, [myMember, persistMyCells]);
 
-  const deleteMyUser = useCallback(async () => {
+  const deleteAllUsers = useCallback(async () => {
     if (!client || !userId) {
       return;
     }
 
     const confirmed = window.confirm(
-      "내 사용자 정보를 삭제합니다.\n내 이름/시간표가 목록에서 사라집니다.\n정말 진행할까요?",
+      "전체 사용자 정보를 삭제합니다.\n팀원 전체의 이름/시간표가 모두 삭제됩니다.\n정말 진행할까요?",
     );
     if (!confirmed) {
       return;
     }
 
-    setStatusMessage("내 사용자 삭제 진행 중...");
+    setStatusMessage("전체 사용자 삭제 진행 중...");
 
-    const { error } = await client
-      .from("team_members")
-      .delete()
-      .eq("team_code", TEAM_CODE)
-      .eq("user_id", userId);
+    const editorName =
+      myMember?.display_name || displayNameInput.trim() || `온라인사역-${userId.slice(0, 4)}`;
+    const { error } = await client.rpc("delete_all_team_members", {
+      p_team_code: TEAM_CODE,
+      p_editor_name: editorName,
+    });
 
     if (error?.message) {
-      setStatusMessage(
-        `내 사용자 삭제 실패: ${error.message} (team_members DELETE 정책을 확인해주세요.)`,
-      );
+      const missingRpc =
+        error.message.includes("Could not find the function") ||
+        error.message.includes("delete_all_team_members");
+      if (missingRpc) {
+        setStatusMessage("전체 사용자 삭제 실패: delete_all_team_members RPC를 먼저 생성해주세요.");
+      } else {
+        setStatusMessage(`전체 사용자 삭제 실패: ${error.message}`);
+      }
       return;
     }
 
-    window.localStorage.removeItem("meet-display-name");
-    setDisplayNameInput("");
-    setNeedsNameSetup(true);
     setSelectedMemberId("");
     setDraftCells({});
-    setStatusMessage("내 사용자 삭제 완료");
+    setStatusMessage("전체 사용자 삭제 완료");
     await fetchMembers();
-  }, [client, fetchMembers, userId]);
+  }, [client, displayNameInput, fetchMembers, myMember, userId]);
 
   const resetAllSchedules = useCallback(async () => {
     if (!client || !userId) {
@@ -890,15 +923,51 @@ export default function Home() {
               내 시간표 비우기
             </button>
 
+            <div className="inline-flex h-10 items-center rounded-xl border border-slate-300 bg-white p-1 text-xs sm:text-sm">
+              <button
+                type="button"
+                onClick={() => setPaintMode("smart")}
+                className={`rounded-lg px-2.5 py-1.5 transition ${
+                  paintMode === "smart"
+                    ? "bg-slate-900 text-white"
+                    : "text-slate-600 hover:bg-slate-100"
+                }`}
+              >
+                토글
+              </button>
+              <button
+                type="button"
+                onClick={() => setPaintMode("mark")}
+                className={`rounded-lg px-2.5 py-1.5 transition ${
+                  paintMode === "mark"
+                    ? "bg-emerald-600 text-white"
+                    : "text-slate-600 hover:bg-slate-100"
+                }`}
+              >
+                체크
+              </button>
+              <button
+                type="button"
+                onClick={() => setPaintMode("erase")}
+                className={`rounded-lg px-2.5 py-1.5 transition ${
+                  paintMode === "erase"
+                    ? "bg-rose-600 text-white"
+                    : "text-slate-600 hover:bg-slate-100"
+                }`}
+              >
+                지우기
+              </button>
+            </div>
+
             <button
               type="button"
               onClick={() => {
-                void deleteMyUser();
+                void deleteAllUsers();
               }}
               disabled={!myMember}
               className="h-10 rounded-xl border border-rose-300 bg-rose-50 px-3 text-sm text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-100 disabled:text-slate-400"
             >
-              내 사용자 삭제
+              전체 사용자 삭제
             </button>
 
             <button
@@ -968,6 +1037,9 @@ export default function Home() {
             현재 보기: <span className="font-semibold text-slate-700">{selectedMember?.display_name ?? "없음"}</span>
             {canEditSelected ? " (편집 가능)" : " (읽기 전용)"}
           </p>
+          <p className="mt-1 text-xs text-slate-500">
+            터치 입력: 모드를 선택한 뒤 드래그하세요. `토글`은 셀 상태를 반전, `체크`는 가능으로, `지우기`는 비움 처리합니다.
+          </p>
         </section>
 
         <section className="grid animate-fade-up gap-4 [animation-delay:220ms] lg:grid-cols-[1fr_340px]">
@@ -991,7 +1063,7 @@ export default function Home() {
               <tbody>
                 {Array.from({ length: SLOT_COUNT }, (_, slot) => (
                   <tr key={slot}>
-                    <th className="sticky left-0 z-10 h-8 border border-slate-300 bg-slate-50 px-1 text-xs font-medium text-slate-600">
+                    <th className="sticky left-0 z-10 h-11 border border-slate-300 bg-slate-50 px-1 text-xs font-medium text-slate-600 md:h-8">
                       {slotToTime(slot)}
                     </th>
 
@@ -1016,7 +1088,11 @@ export default function Home() {
                                 return;
                               }
 
-                              const nextValue = !Boolean(displayedCells[key]);
+                              const currentValue = Boolean(displayedCells[key]);
+                              const nextValue =
+                                paintMode === "smart"
+                                  ? !currentValue
+                                  : paintMode === "mark";
                               setDrawing({ active: true, value: nextValue });
                               paintCell(dayIndex, slot, nextValue);
                             }}
@@ -1026,7 +1102,7 @@ export default function Home() {
                               }
                               paintCell(dayIndex, slot, drawing.value);
                             }}
-                            className={`h-8 w-full touch-none border border-slate-300 transition-colors ${classForCell(
+                            className={`h-11 w-full touch-none border border-slate-300 transition-colors active:scale-[0.98] md:h-8 ${classForCell(
                               marked,
                               common,
                               ratio,
@@ -1117,6 +1193,9 @@ export default function Home() {
             <p className="mt-2 text-sm text-slate-600">
               팀원 식별과 수정자 표시를 위해 첫 접속 시 이름이 필요합니다.
             </p>
+            <p className="mt-1 text-xs text-slate-500">
+              이름 없이 먼저 보려면 보기 전용으로 들어갈 수 있습니다.
+            </p>
             <input
               value={displayNameInput}
               onChange={(event) => setDisplayNameInput(event.target.value)}
@@ -1138,6 +1217,17 @@ export default function Home() {
               className="mt-3 h-11 w-full rounded-xl bg-slate-900 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               시작하기
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setIsViewOnlyMode(true);
+                setNeedsNameSetup(false);
+                setStatusMessage("보기 전용 모드");
+              }}
+              className="mt-2 h-10 w-full rounded-xl border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              보기 전용으로 들어가기
             </button>
           </div>
         </div>

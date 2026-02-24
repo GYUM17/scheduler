@@ -4,6 +4,7 @@
 
 - 드래그로 시간표 체크
 - 가능한 시간만 체크
+- 터치 입력 모드(토글/체크/지우기) 지원
 - 본인 데이터만 편집 가능
 - 팀 전체 공통 가능 시간 자동 계산
 - 실시간 동기화(여러 명 동시 접속)
@@ -95,6 +96,28 @@ $$;
 
 revoke all on function public.reset_team_members(text, text) from public;
 grant execute on function public.reset_team_members(text, text) to authenticated;
+
+create or replace function public.delete_all_team_members(
+  p_team_code text,
+  p_editor_name text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if p_team_code <> 'online-ministry-team' then
+    raise exception 'invalid team code';
+  end if;
+
+  delete from public.team_members
+  where team_code = p_team_code;
+end;
+$$;
+
+revoke all on function public.delete_all_team_members(text, text) from public;
+grant execute on function public.delete_all_team_members(text, text) to authenticated;
 ```
 
 ## 2. 환경변수 설정
@@ -124,13 +147,14 @@ npm run dev
 
 - 접속 시 익명 로그인으로 사용자 식별
 - 첫 접속 시 이름 입력 후 사용 시작
+- 첫 접속 모달에서 보기 전용으로 입장 가능(사용자 행 미생성)
 - 사용자 1명당 `team_members`에 1개 행 생성
 - 본인 행(`auth.uid() = user_id`)만 수정 가능
 - 다른 사람 수정사항은 Realtime으로 즉시 반영
 - 멤버 카드에 최근 수정 시각/편집자 표시
 - 일요일 00:00(KST) 이전 데이터는 자동으로 초기화(빈 시간표) 처리
 - `전체 초기화` 버튼은 경고 확인 후 팀 전체 시간표를 초기화
-- `내 사용자 삭제` 버튼으로 본인 사용자/시간표를 삭제 가능
+- `전체 사용자 삭제` 버튼은 경고 확인 후 팀 전체 사용자/시간표를 삭제
 
 ## 5. 멀티탭 검증
 
