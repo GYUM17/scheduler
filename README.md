@@ -59,6 +59,42 @@ with check (
   team_code = 'online-ministry-team'
   and auth.uid() = user_id
 );
+
+create policy "team_members_delete_own"
+on public.team_members
+for delete
+to authenticated
+using (
+  team_code = 'online-ministry-team'
+  and auth.uid() = user_id
+);
+
+create or replace function public.reset_team_members(
+  p_team_code text,
+  p_editor_name text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if p_team_code <> 'online-ministry-team' then
+    raise exception 'invalid team code';
+  end if;
+
+  update public.team_members
+  set
+    cells = '{}'::jsonb,
+    mode = 'available',
+    last_editor = coalesce(nullif(trim(p_editor_name), ''), 'system'),
+    updated_at = now()
+  where team_code = p_team_code;
+end;
+$$;
+
+revoke all on function public.reset_team_members(text, text) from public;
+grant execute on function public.reset_team_members(text, text) to authenticated;
 ```
 
 ## 2. 환경변수 설정
@@ -93,6 +129,8 @@ npm run dev
 - 다른 사람 수정사항은 Realtime으로 즉시 반영
 - 멤버 카드에 최근 수정 시각/편집자 표시
 - 일요일 00:00(KST) 이전 데이터는 자동으로 초기화(빈 시간표) 처리
+- `전체 초기화` 버튼은 경고 확인 후 팀 전체 시간표를 초기화
+- `내 사용자 삭제` 버튼으로 본인 사용자/시간표를 삭제 가능
 
 ## 5. 멀티탭 검증
 

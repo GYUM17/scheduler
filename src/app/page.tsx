@@ -764,6 +764,80 @@ export default function Home() {
     await persistMyCells(empty);
   }, [myMember, persistMyCells]);
 
+  const deleteMyUser = useCallback(async () => {
+    if (!client || !userId) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "내 사용자 정보를 삭제합니다.\n내 이름/시간표가 목록에서 사라집니다.\n정말 진행할까요?",
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setStatusMessage("내 사용자 삭제 진행 중...");
+
+    const { error } = await client
+      .from("team_members")
+      .delete()
+      .eq("team_code", TEAM_CODE)
+      .eq("user_id", userId);
+
+    if (error?.message) {
+      setStatusMessage(
+        `내 사용자 삭제 실패: ${error.message} (team_members DELETE 정책을 확인해주세요.)`,
+      );
+      return;
+    }
+
+    window.localStorage.removeItem("meet-display-name");
+    setDisplayNameInput("");
+    setNeedsNameSetup(true);
+    setSelectedMemberId("");
+    setDraftCells({});
+    setStatusMessage("내 사용자 삭제 완료");
+    await fetchMembers();
+  }, [client, fetchMembers, userId]);
+
+  const resetAllSchedules = useCallback(async () => {
+    if (!client || !userId) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "전체 시간표를 초기화합니다.\n팀원 전체의 가능한 시간 체크가 모두 삭제됩니다.\n정말 진행할까요?",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setStatusMessage("전체 초기화 진행 중...");
+
+    const editorName =
+      myMember?.display_name || displayNameInput.trim() || `온라인사역-${userId.slice(0, 4)}`;
+    const { error } = await client.rpc("reset_team_members", {
+      p_team_code: TEAM_CODE,
+      p_editor_name: editorName,
+    });
+
+    if (error?.message) {
+      const missingRpc =
+        error.message.includes("Could not find the function") ||
+        error.message.includes("reset_team_members");
+      if (missingRpc) {
+        setStatusMessage("전체 초기화 실패: reset_team_members RPC를 먼저 생성해주세요.");
+      } else {
+        setStatusMessage(`전체 초기화 실패: ${error.message}`);
+      }
+      return;
+    }
+
+    setStatusMessage("전체 초기화 완료");
+    await fetchMembers();
+  }, [client, displayNameInput, fetchMembers, myMember, userId]);
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_15%_20%,#dbeafe_0%,transparent_45%),radial-gradient(circle_at_85%_15%,#fde68a_0%,transparent_40%),linear-gradient(155deg,#eff6ff_0%,#f8fafc_45%,#ecfeff_100%)] px-4 py-8 text-slate-900 md:px-8">
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 rounded-[30px] border border-slate-200/70 bg-white/75 p-4 shadow-[0_35px_90px_-35px_rgba(15,23,42,0.35)] backdrop-blur md:p-8">
@@ -814,6 +888,28 @@ export default function Home() {
               className="h-10 rounded-xl border border-slate-300 px-3 text-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
             >
               내 시간표 비우기
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                void deleteMyUser();
+              }}
+              disabled={!myMember}
+              className="h-10 rounded-xl border border-rose-300 bg-rose-50 px-3 text-sm text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-100 disabled:text-slate-400"
+            >
+              내 사용자 삭제
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                void resetAllSchedules();
+              }}
+              disabled={!myMember}
+              className="h-10 rounded-xl border border-rose-300 bg-rose-50 px-3 text-sm text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-100 disabled:text-slate-400"
+            >
+              전체 초기화
             </button>
 
             {!canEditSelected && myMember ? (
